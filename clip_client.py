@@ -2,7 +2,7 @@
 # -*- coding:utf-8 -*-
 
 from gi.repository import Gtk, Gdk 
-import pyperclip
+# import pyperclip
 import sys, os
 import base64
 import signal
@@ -15,10 +15,12 @@ total=0
 
 def test(*args): 
 	# print "Clipboard changed: recv data?"
-	data = pyperclip.paste()
+	# data = pyperclip.paste()
+	clip = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD) 
+	data = clip.wait_for_text()
+	# print 'clip changed, data len ', len(data) # TODO: 计算clip.paste时间消耗
 	# TODO: 日志加时间戳
-	print 'clip changed, data len ', len(data) # TODO: 计算clip.paste时间消耗
-	if not data.startswith(magic + ':data:'):
+	if None == data or not data.startswith(magic + ':data:'):
 		# TODO: 处理异常?
 		return
 
@@ -40,11 +42,15 @@ def test(*args):
 
 	if ack >= total:
 		print 'recv ended!'
+		clip = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD) 
+		clip.store()
 		sys.exit(0)
 
 def send_ack(ack):
 	data = magic + ':ack:' + str(ack) + ':'
-	pyperclip.copy(data)
+	# pyperclip.copy(data)
+	clip = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD) 
+	clip.set_text(data, len(data))
 	pass
 
 def usage():

@@ -2,15 +2,15 @@
 # -*- coding:utf-8 -*-
 
 from gi.repository import Gtk, Gdk 
-import pyperclip
+# import pyperclip
 import sys, os
 import base64
 import signal
 
 magic="ksvd@copy"
 # echo "$magic:data:$seq:$send_size:$checksum:"
-# segment=50*1024*1024
-segment=1024
+segment=50*1024*1024
+# segment=1024
 seq=0
 target_file=""
 total=0
@@ -19,10 +19,12 @@ total=0
 # TODO: register signal SIGINT terminate
 def test(*args): 
 	# print "Clipboard changed: recv data?"
-	data = pyperclip.paste()
+	# data = pyperclip.paste()
+	clip = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD) 
+	data = clip.wait_for_text()
 	# TODO: 日志加时间戳
-	print 'clip changed, data len ', len(data) # TODO: 计算clip.paste时间消耗
-	if not data.startswith(magic + ':ack:'):
+	# print 'clip changed, data len ', len(data) # TODO: 计算clip.paste时间消耗
+	if None == data  or not data.startswith(magic + ':ack:'):
 		# TODO: 处理异常?
 		return
 
@@ -61,7 +63,9 @@ def copy2clip():
 	data = magic + ':data:' + str(seq) + ':' + str(size) + ':' + str(total) + ':\n'
 	data = data + base64.b64encode(send_data)
 	# TODO: 计算md5sum
-	pyperclip.copy(data)
+	# pyperclip.copy(data)
+	clip = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD) 
+	clip.set_text(data, len(data))
 
 	pass
 
