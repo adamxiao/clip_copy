@@ -43,15 +43,23 @@ def test(*args):
 
 	if ack >= total:
 		print('recv ended!')
+		send_finish_ack(ack)
 		clip = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD) 
 		clip.store()
 		sys.exit(0)
 
 def send_ack(ack):
-	data = magic + ':ack:' + str(ack) + ':'
+	data = magic + ':ack:' + str(ack) + ':\n'
 	# pyperclip.copy(data)
 	clip = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD) 
 	clip.set_text(data, len(data))
+	pass
+
+def send_finish_ack(ack):
+	data = magic + ':ack:' + str(ack) + ':\n'
+	import subprocess
+	p = subprocess.Popen(['xclip', '-selection', 'c'], stdin=subprocess.PIPE, close_fds=True)
+	p.communicate(input=data.encode('utf-8'))
 	pass
 
 def usage():
