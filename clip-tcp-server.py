@@ -27,7 +27,7 @@ class TCPEchoServer():
         self.last_send_data = None # 待重传的数据
         self.resend_ack = False # 是否需要发送ack, 收到包就要发ack, 只有异常包不需要发送ack?
 
-        self.seq = 0
+        self.seq = 1
         self.ack = 0
 
     def init_tcp_server(self):
@@ -186,7 +186,7 @@ class TCPEchoServer():
     def forward_data_to_clip(self, data):
         """docstring for forward_tcp_to_clip"""
         b64_data = self.encode_data(data)
-        print('1.recv tcp send req# %d >>>>>>' % (len(data)))
+        print('1.recv tcp send req#%d #%d >>>>>>' % (self.seq, len(data)))
         clip = Gtk.Clipboard.get(send_clip) 
         clip.set_text(b64_data, len(b64_data))
         print('2.clip forward req')
