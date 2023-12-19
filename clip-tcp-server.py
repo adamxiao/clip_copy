@@ -59,9 +59,9 @@ class TCPEchoServer():
             print('magic wrong data')
             return None
 
-        ack = parse_hex_str(data[10:16])
-        seq = parse_hex_str(data[16:22])]
-        length = parse_hex_str(data[22:28])] # check length?
+        ack = self.parse_hex_str(data[10:16])
+        seq = self.parse_hex_str(data[16:22])
+        length = self.parse_hex_str(data[22:28]) # check length?
         # 处理ack, 以及seq
         if ack == self.seq:
             self.seq += 1
@@ -96,7 +96,6 @@ class TCPEchoServer():
         return hex_string
 
     def parse_hex_str(self, hex_string):
-        hex_string = format(num, f'0{desired_length}X')
         decimal_number = int(hex_string, 16)
         return decimal_number
 
@@ -111,7 +110,7 @@ class TCPEchoServer():
         if data:
             enc_data = base64.b64encode(data).decode('utf-8')
             return '1qaz2wsx@@' + seq_str + ack_str + len_str + enc_data
-        else
+        else:
             # only send ack
             return '1qaz2wsx@@' + seq_str + ack_str + len_str
 
