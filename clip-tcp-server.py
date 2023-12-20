@@ -26,7 +26,10 @@ class TCPEchoServer():
         self.data_queue = queue.Queue(100000)
         self.last_send_data = None # 待重传的数据
         self.resend_ack = False # 是否需要发送ack, 收到包就要发ack, 只有异常包不需要发送ack?
+        self.retrans_count = 0
 
+        self.tcp_seq = 1
+        self.recv_seq = 0
         self.seq = 1
         self.ack = 0
 
@@ -59,19 +62,32 @@ class TCPEchoServer():
             print('magic wrong data')
             return None
 
-        ack = self.parse_hex_str(data[10:16])
-        seq = self.parse_hex_str(data[16:22])
+        seq = self.parse_hex_str(data[10:16])
+        ack = self.parse_hex_str(data[16:22])
         length = self.parse_hex_str(data[22:28]) # check length?
         # 处理ack, 以及seq
         if ack == self.seq:
+            print('recv ack is #%d == seq #%d, could send new data' % (ack, self.seq))
+            # 收到数据包的ack, 可以发新数据包了
             self.seq += 1
             self.can_send_clip = True
             self.retrans_data = False
-        else:
-            print('retrans data seq# ', self.seq)
+            self.retrans_count = 0
+            self.last_send_data = None
+        elif self.last_send_data:
+            print('recv ack is old #%d != seq #%d, should retrans data' % (ack, self.seq))
             self.can_send_clip = True
-            self.retrans_data = True
-            # TODO: retrans data
+            if self.retrans_count < 5:
+                self.retrans_count += 1;
+                self.retrans_data = True
+                # 在外面重传数据
+            else:
+                print('ERROR: reach retrans data limit, seq #%d, ack #%d' % (self.seq, self.ack))
+                # FIXME: 断开客户端连接, 失败了
+        else:
+            print('recv ack is #%d != seq #%d (new?), could send new data' % (ack, self.seq))
+            # 没有需要重传的数据, 可以发新数据包了
+            self.can_send_clip = True
             pass
 
         if 0 == length:
@@ -79,11 +95,15 @@ class TCPEchoServer():
             return None
 
         self.resend_ack = True
-        if seq == self.ack:
+        self.recv_seq = seq
+        if seq == self.ack + 1:
+            print('recv seq is %d, self.ack %d' % (seq, self.ack))
             # process data
             self.ack = seq
             # receive new data, send ack!
         else:
+            has_last_send_data = 1 if self.last_send_data else 0
+            print('recv duplicate seq is old #%d, self.ack #%d, resend ack, has_last_send_data %d, send queue len %d' % (seq, self.ack, has_last_send_data, self.data_queue.qsize()))
             # receive duplicate data, send ack!
             return None
 
@@ -148,7 +168,7 @@ class TCPEchoServer():
             # 异步处理?
             data = self.decode_data(b64_data)
             if data:
-                print('8.<<<<<<  tcp forward resp# %d' % len(data))
+                print('8.<<<<<<  tcp forward resp seq #%d, len: %d' % (self.recv_seq, len(data)))
                 self.client_socket.sendall(data)
             # send ack, or retrans data
             if self.retrans_data:
@@ -158,8 +178,14 @@ class TCPEchoServer():
                 self.forward_data_to_clip(self.last_send_data)
             elif self.resend_ack:
                 self.resend_ack = False
-                # 立即回ack! FIXME: 不用考虑是否能写clip?
-                self.send_ack_to_clip()
+                if not self.data_queue.empty():
+                    self.forward_data_queue_to_clip() # 再发新数据了, 带上ack!
+                else:
+                    # 立即回ack! FIXME: 不用考虑是否能写clip?
+                    self.send_ack_to_clip()
+            elif self.can_send_clip:
+                # 可能永远不走到这里。。。
+                self.forward_data_queue_to_clip() # 可以再发数据了!
 
     def start_server(self):
         GLib.idle_add(self.accept_connections)
@@ -186,10 +212,9 @@ class TCPEchoServer():
     def forward_data_to_clip(self, data):
         """docstring for forward_tcp_to_clip"""
         b64_data = self.encode_data(data)
-        print('1.recv tcp send req#%d #%d >>>>>>' % (self.seq, len(data)))
         clip = Gtk.Clipboard.get(send_clip) 
         clip.set_text(b64_data, len(b64_data))
-        print('2.clip forward req')
+        print('2.clip forward req #%d, ack #%d, len: %d >>>>>>' % (self.seq, self.ack, len(data)))
         self.can_send_clip = False
 
     def send_ack_to_clip(self):
@@ -197,7 +222,8 @@ class TCPEchoServer():
         send_ack = self.encode_data(None)
         clip = Gtk.Clipboard.get(send_clip) 
         clip.set_text(send_ack, -1)
-        self.can_send_clip = False
+        # FIXME: 单纯回ack，不需要考虑是否能发
+        self.can_send_clip = True
         # GLib.timeout_add_seconds(1, self.timeout_reset_send_clip)
 
     def handle_client_data(self, source, condition):
@@ -207,11 +233,14 @@ class TCPEchoServer():
                 self.client_socket.close()
                 return False
 
+            print('1.recv tcp send data seq #%d, len: %d >>>>>>' % (self.tcp_seq, len(data)))
+            self.tcp_seq += 1
+
             if self.can_send_clip:
                 self.last_send_data = data
                 self.forward_data_to_clip(data)
             else:
-                print('1.enqueue data# %d >>>>>>' % (len(data)))
+                print('1.enqueue data# %d, cur seq: #%d, cur ack: #%d, last_send_data %d>>>>>>' % (len(data), self.seq, self.ack, 1 if self.last_send_data else 0))
                 self.data_queue.put(data)
 
         return True
