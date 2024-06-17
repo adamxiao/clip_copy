@@ -14,7 +14,7 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 exception = logger.exception
 error = logger.error
@@ -261,7 +261,7 @@ class TCPEchoServer():
 
     def handle_client_data(self, source, condition):
         if condition & GLib.IO_IN:
-            data = self.client_socket.recv(1600)
+            data = self.client_socket.recv(16000)
             if not data:
                 self.client_socket.close()
                 return False

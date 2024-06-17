@@ -22,6 +22,26 @@ python clip_client.py output.file
 python clip_server.py input.file
 ```
 
+## clip-tcp-server.py使用
+
+客户端代理, 监听2022端口
+```
+clip-tcp-server.py --server 0.0.0.0 2022
+```
+
+服务端代理, 连接真实服务器
+```
+clip-tcp-server.py --client 1.1.1.1 22
+```
+
+最后客户端可以做一个dnat转换, 方便客户端连接真是服务器
+```
+# 转发dnat
+iptables -t nat -I PREROUTING -d 1.1.1.1/32 -p tcp -m tcp --dport 22 -j DNAT --to-destination 10.30.2.98:2022
+# 本机dnat
+iptables -t nat -I OUTPUT -d 1.1.1.1/32 -p tcp -m tcp --dport 22 -j DNAT --to-destination 10.30.2.98:2022
+```
+
 ## TODO
 
 windows下也能使用剪切版拷贝文件?
