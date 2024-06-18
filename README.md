@@ -59,6 +59,14 @@ https://www.programcreek.com/python/example/8347/gtk.Clipboard
 
 ## FAQ
 
+#### 通过clip传输文件
+
+使用xclip
+```
+base64 xxx.bin | xclip
+xclip -o | base64 -d > xxx.bin
+```
+
 #### ubuntu系统clip最后一个ack没有发出来的问题
 
 暂时使用xclip解决
