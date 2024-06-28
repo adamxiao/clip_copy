@@ -10,6 +10,7 @@ import queue
 import logging
 import jenkins
 import time
+#Gdk.threads_init()
 import threading
 
 # 1. 新增重传间隔, 至少1s?
@@ -50,15 +51,22 @@ class TCPEchoServer():
         self.can_send_clip = True # 能够发送数据
         self.retrans_data = False # 是否重传数据
         self.data_queue = queue.Queue(100000)
+        self.clip_queue = queue.Queue(1000)
         self.last_send_data = None # 待重传的数据
         self.last_send_data_ts = 0 # 上次发送数据的时间戳
         self.resend_ack = False # 是否需要发送ack, 收到包就要发ack, 只有异常包不需要发送ack?
         self.retrans_count = 0
 
+        # 收到, 待转发的seq
         self.tcp_seq = 1
+
+        # 发送, 待转发的seq
         self.recv_seq = 0
+
+        # 待转发的逻辑seq,ack等
         self.seq = 1
         self.ack = 0
+        self.recv_ack = 0
 
         # 开启jenkins线程
         self.thread = threading.Thread(target=self.jenkin_run)
@@ -66,38 +74,38 @@ class TCPEchoServer():
         self.thread.start()
         if IS_TCP_SERVER: # 从jenkins中收数据
             GLib.timeout_add(100, self.consume_jenkin_queue)  # Check the queue every 100 ms
+            GLib.timeout_add(100, self.consume_clip_queue)  # Check the queue every 100 ms
+
+        # 开启clip线程, 发送数据到clip中
+        if IS_TCP_SERVER:
+            self.clip_thread = threading.Thread(target=self.clip_run)
+            #self.clip_thread.daemon = True
+            self.clip_thread.start()
 
     # 参考clip_change的实现啦
     def consume_jenkin_queue(self):
         while not self.jenkins_queue.empty():
+            if not self.client_socket:
+                error("client socket not exist, exit")
+                system.exit(1)
             b64_data = self.jenkins_queue.get()
             if b64_data is None:
+                error("get wrong data")
                 return False  # Stop the timeout_add callback
             if self.client_socket:
-                info('7.recv jenkins_queue resp len %d', len(b64_data) if b64_data else 0)
+                if b64_data and len(b64_data) >= 28:
+                    seq = self.parse_hex_str(b64_data[10:16])
+                    ack = self.parse_hex_str(b64_data[16:22])
+                    length = self.parse_hex_str(b64_data[22:28])
+                    info('3.recv proxy data seq %d, len %d, ack %d <<<<<<' % (seq, length, ack))
                 # 异步处理?
-                data = self.decode_data(b64_data)
+                (seq, data) = self.decode_data(b64_data)
                 if data:
-                    info('8.<<<<<<  tcp forward resp seq #%d, len: %d' % (self.recv_seq, len(data)))
+                    info('4.recv proxy data seq %d, len: %d <<<<<<' % (seq, len(data)))
                     self.client_socket.sendall(data)
-                # send ack, or retrans data
-                if self.retrans_data:
-                    pass
-                    self.retrans_data = False
-                    self.resend_ack = False
-                    # 立即重传! FIXME: 不用考虑是否能写clip?
-                    # 需要等待一定时间才需要重传
-                    # self.forward_data_to_clip(self.last_send_data)
-                elif self.resend_ack:
-                    self.resend_ack = False
-                    if not self.data_queue.empty():
-                        self.forward_data_queue_to_clip() # 再发新数据了, 带上ack!
-                    else:
-                        # 立即回ack! FIXME: 不用考虑是否能写clip?
-                        self.send_ack_to_clip()
-                elif self.can_send_clip:
-                    # 可能永远不走到这里。。。
-                    self.forward_data_queue_to_clip() # 可以再发数据了!
+                # if seq > 0: # FIXME: send ack 那边暂时不需要ack
+                    # self.jenkins_queue.put((seq, None))
+                # FIXME: retrans data!
         return True  # Keep the timeout_add callback active
 
     # 开启jenkins线程
@@ -119,16 +127,63 @@ class TCPEchoServer():
                     continue
         else:
             while True:
+                send_ack = 0
                 if self.jenkins_queue.empty():
                     time.sleep(0.1)
                     continue
                 while not self.jenkins_queue.empty():
-                    b64_data = self.jenkins_queue.get() # 验证是否会阻塞
-                    if b64_data is None:
-                        info('get jenkins_queue empty, exit ?')
-                        return False  # Stop the timeout_add callback
-                    info('000.send data to jenkins len: %d' % len(b64_data))
-                    adam = server.build_job(jenkins_job, {'commit': b64_data})
+                    (seq, data) = self.jenkins_queue.get()
+                    if not data and send_ack >= self.ack:
+                        # only ack, 但是已经发送过了, 则不用处理
+                        continue
+                    send_ack = self.ack
+                    send_data = self.encode_data(data, seq)
+                    info('2.send proxy data seq %d, len: %d, ack: %d >>>>>>' % (seq, len(data) if data else 0, self.ack))
+                    adam = server.build_job(jenkins_job, {'commit': send_data})
+
+    # 发送数据到clip中
+    def consume_clip_queue(self):
+        while not self.clip_queue.empty():
+            b64_data = self.clip_queue.get()
+            if b64_data is None:
+                error("get wrong send clip data")
+                return False  # Stop the timeout_add callback
+            clip = Gtk.Clipboard.get(send_clip) 
+            clip.set_text(b64_data, len(b64_data))
+        return True # Keep the timeout_add callback active
+
+
+    # 开启clip线程, 发送数据
+    def clip_run(self):
+        while True:
+            if self.data_queue.empty():
+                time.sleep(0.1)
+                continue
+            while not self.data_queue.empty():
+                (seq, data) = self.data_queue.get() # 验证是否会阻塞
+                for i in range(50):
+                    if self.recv_ack >= seq:
+                        break
+                    send_data = self.encode_data(data, seq)
+                    length = 0
+                    if not data:
+                        if 0:
+                            # FIXME: 发送ack
+                            break
+                    if data:
+                        length = len(data)
+                    if i == 0:
+                        info('2.send proxy data seq %s, len: %d, ack: %d >>>>>>' % (seq, length, self.ack))
+                    else:
+                        info('timeout 2.send proxy data seq %s, len: %d, ack: %d, retran: %d >>>>>>' % (seq, length, self.ack, i))
+                    # 发送数据
+                    self.clip_queue.put(send_data)
+                    # clip = Gtk.Clipboard.get(send_clip) 
+                    # clip.set_text(send_data, len(send_data))
+                    for j in range(50): # 等5s收到ack则
+                        if self.recv_ack >= seq:
+                            break
+                        time.sleep(0.1)
 
 
     def init_tcp_server(self):
@@ -151,72 +206,44 @@ class TCPEchoServer():
         )
 
     def decode_data(self, data):
-        """docstring for encode_data"""
         if not data:
             debug('empty data')
-            return None
+            return (0, None)
             
         if '1qaz2wsx@@' != data[:10]:
             debug('magic wrong data')
-            return None
+            return (0, None)
 
         seq = self.parse_hex_str(data[10:16])
         ack = self.parse_hex_str(data[16:22])
         length = self.parse_hex_str(data[22:28]) # check length?
-        # 处理ack, 以及seq
-        if ack == self.seq:
-            debug('recv ack is #%d == seq #%d, could send new data' % (ack, self.seq))
-            # 收到数据包的ack, 可以发新数据包了
-            if IS_TCP_SERVER:
-                self.seq += 1
-            self.can_send_clip = True
-            self.retrans_data = False
-            self.retrans_count = 0
-            self.last_send_data = None
-        elif self.last_send_data and IS_TCP_SERVER:
-            debug('recv ack is old #%d != seq #%d, should retrans data' % (ack, self.seq))
-            # self.can_send_clip = True
-            if self.retrans_count < 10:
-                self.retrans_count += 1;
-                if not self.retrans_data: # 延时重传数据
-                    send_seq = self.seq
-                    self.retrans_data = True
-                    GLib.timeout_add_seconds(1, self.timeout_retrans_data, send_seq)
-            else:
-                exception('ERROR: reach retrans data limit, seq #%d, ack #%d' % (self.seq, self.ack))
-                pass
-                # FIXME: 断开客户端连接, 失败了
-        else:
-            debug('recv ack is #%d != seq #%d (new?), could send new data' % (ack, self.seq))
-            # 没有需要重传的数据, 可以发新数据包了
-            self.can_send_clip = True
-            pass
+
+        # 处理ack
+        if ack > self.recv_ack: # 收到新的数据包的ack
+            info('recv ack for seq %d, prev is %d' % (ack, self.recv_ack))
+            self.recv_ack = ack
 
         if 0 == length:
             # recv only ack, do nothing!
-            return None
+            return (0, None)
 
-        self.resend_ack = True
-
-        # 检查长度是否符合, 不符合丢弃
-        #if length != len(data)/2-14:
-        #    error('!!!!!!!!!!!!!! recv data length is %d != %d len(data), drop it: %s!' % (length, len(data)/2-14, data))
-        #    return None
-
-        self.recv_seq = seq
+        # 处理seq: 更新一下self.ack
         if seq == self.ack + 1:
             debug('recv seq is %d, self.ack %d' % (seq, self.ack))
             # process data
             self.ack = seq
             # receive new data, send ack!
+        elif seq <= self.ack:
+            debug('recv duplicate old seq old %d, len %d' % (seq, length))
+            return (0, None)
         else:
-            has_last_send_data = 1 if self.last_send_data else 0
-            debug('recv duplicate seq is old #%d, self.ack #%d, resend ack, has_last_send_data %d, send queue len %d' % (seq, self.ack, has_last_send_data, self.data_queue.qsize()))
-            # receive duplicate data, send ack!
-            return None
+            # 退出程序!
+            error('recv wrong seq %d, expect %d' % (seq, self.ack + 1))
+            system.exit(1)
+            return (0, None)
 
         new_data = base64.b64decode(data[28:])
-        return new_data
+        return (seq, new_data)
 
     def get_hex_str(self, num):
         desired_length = 6  # for example, you want the string to have 6 characters
@@ -227,17 +254,14 @@ class TCPEchoServer():
         decimal_number = int(hex_string, 16)
         return decimal_number
 
-    def encode_data(self, data):
-        """docstring for encode_data"""
+    def encode_data(self, data, seq):
         ack_str = self.get_hex_str(self.ack)
-        seq_str = self.get_hex_str(self.seq)
+        seq_str = self.get_hex_str(seq)
         length = 0
         if data:
             length = len(data)
         len_str = self.get_hex_str(length)
         if data:
-            if not IS_TCP_SERVER:
-                self.seq += 1
             enc_data = base64.b64encode(data).decode('utf-8')
             return '1qaz2wsx@@' + seq_str + ack_str + len_str + enc_data
         else:
@@ -253,48 +277,28 @@ class TCPEchoServer():
         clip = Gtk.Clipboard.get(recv_clip) 
         clip.connect('owner-change', self.clip_change) 
 
-    def timeout_retrans_data(self, userdata):
-        # 判断是否能够重传数据
-        self.retrans_data = False
-        if self.seq > userdata:
-            return
-        info('timeout retrans data seq %d, cur seq #%d' % (userdata, self.seq))
-        self.resend_ack = False
-        # 立即重传! FIXME: 不用考虑是否能写clip?
-        self.forward_data_to_clip(self.last_send_data)
-
     def clip_change(self, *args):
         if not IS_TCP_SERVER and not self.client_socket:
             self.start_client()
 
         clip = Gtk.Clipboard.get(recv_clip) 
+        # FIXME: client socket 断开则退出
         if self.client_socket:
             # FIXME: 验证b64_data? 空数据表示连接断开?
             b64_data = clip.wait_for_text()
-            info('7.recv clip resp len %d', len(b64_data) if b64_data else 0)
+            if b64_data and len(b64_data) >= 28:
+                seq = self.parse_hex_str(b64_data[10:16])
+                ack = self.parse_hex_str(b64_data[16:22])
+                length = self.parse_hex_str(b64_data[22:28])
+                info('3.recv proxy data seq %d, len %d, ack %d <<<<<<' % (seq, length, ack))
             # 异步处理?
-            data = self.decode_data(b64_data)
+            (seq, data) = self.decode_data(b64_data)
             if data:
-                debug('8.<<<<<<  tcp forward resp seq #%d, len: %d' % (self.recv_seq, len(data)))
+                info('4.recv proxy data seq %d, len: %d' % (seq, len(data)))
                 self.client_socket.sendall(data)
-            # send ack, or retrans data
-            if self.retrans_data:
-                pass
-                self.retrans_data = False
-                self.resend_ack = False
-                # 立即重传! FIXME: 不用考虑是否能写clip?
-                # 需要等待一定时间才需要重传
-                # self.forward_data_to_clip(self.last_send_data)
-            elif self.resend_ack:
-                self.resend_ack = False
-                if not self.data_queue.empty():
-                    self.forward_data_queue_to_clip() # 再发新数据了, 带上ack!
-                else:
-                    # 立即回ack! FIXME: 不用考虑是否能写clip?
-                    self.send_ack_to_clip()
-            elif self.can_send_clip:
-                # 可能永远不走到这里。。。
-                self.forward_data_queue_to_clip() # 可以再发数据了!
+            if seq > 0: # send ack
+                self.jenkins_queue.put((seq, None))
+            # FIXME: retrans data!
 
     def start_server(self):
         GLib.idle_add(self.accept_connections)
@@ -310,63 +314,20 @@ class TCPEchoServer():
 
         return False
 
-    def forward_data_queue_to_clip(self):
-        """docstring for forward_tcp_to_clip"""
-        # FIXME: merge multi data?
-        if self.data_queue.empty():
-            return
-        if IS_TCP_SERVER:
-            self.last_send_data = self.data_queue.get()
-            self.forward_data_to_clip(self.last_send_data)
-        else:
-            self.forward_data_to_clip(self.data_queue.get())
-
-    def forward_data_to_clip(self, data):
-        """docstring for forward_tcp_to_clip"""
-        b64_data = self.encode_data(data)
-        if IS_TCP_SERVER:
-            clip = Gtk.Clipboard.get(send_clip) 
-            clip.set_text(b64_data, len(b64_data))
-            self.last_send_data_ts = 123 # 精确时间戳
-            # 1s后没有收到ack触发重传?
-            info('2.clip forward req #%d, ack #%d, len: %d >>>>>>' % (self.seq, self.ack, len(data)))
-            send_seq = self.seq
-            self.retrans_data = True
-            GLib.timeout_add_seconds(1, self.timeout_retrans_data, send_seq)
-            self.can_send_clip = False
-        else:
-            info('2.jenkins forward req #%d, ack #%d, len: %d >>>>>>' % (self.seq, self.ack, len(data)))
-            self.jenkins_queue.put(b64_data) # 无需重传
-
-    def send_ack_to_clip(self):
-        """docstring for forward_tcp_to_clip"""
-        send_ack = self.encode_data(None)
-        if IS_TCP_SERVER:
-            clip = Gtk.Clipboard.get(send_clip) 
-            clip.set_text(send_ack, -1)
-            info('clip reply ack #%d' % (self.ack))
-            # FIXME: 单纯回ack，不需要考虑是否能发
-            self.can_send_clip = True
-        else:
-            self.jenkins_queue.put(send_ack)
-            info('jenkins reply ack #%d' % (self.ack))
-
     def handle_client_data(self, source, condition):
         if condition & GLib.IO_IN:
             data = self.client_socket.recv(4000)
             if not data:
+                error("recv failed ====================================================")
                 self.client_socket.close()
                 return False
 
-            debug('1.recv tcp send data seq #%d, len: %d >>>>>>' % (self.tcp_seq, len(data)))
-            self.tcp_seq += 1
-
-            if self.can_send_clip:
-                self.last_send_data = data
-                self.forward_data_to_clip(data)
+            info('1.send proxy data seq %d, len: %d' % (self.tcp_seq, len(data)))
+            if IS_TCP_SERVER:
+                self.data_queue.put((self.tcp_seq, data))
             else:
-                debug('1.enqueue data# %d, cur seq: #%d, cur ack: #%d, last_send_data %d>>>>>>' % (len(data), self.seq, self.ack, 1 if self.last_send_data else 0))
-                self.data_queue.put(data)
+                self.jenkins_queue.put((self.tcp_seq, data))
+            self.tcp_seq += 1
 
         return True
 
