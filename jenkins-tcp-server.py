@@ -58,6 +58,7 @@ class TCPEchoServer():
 
         # 收到, 待转发的seq
         self.tcp_seq = 1
+        self.tcp_len = 0 # 待转发的数据长度
 
         # 发送, 待转发的seq
         self.recv_seq = 0
@@ -146,6 +147,8 @@ class TCPEchoServer():
 
     # 开启发送线程, 发送数据
     def send_proxy_run(self):
+        merge_seq = 0
+        send_len = 0
         send_ack = 0
         while True:
             if self.data_queue.empty():
@@ -153,6 +156,18 @@ class TCPEchoServer():
                 continue
             while not self.data_queue.empty():
                 (seq, data) = self.data_queue.get()
+                if data:
+                    send_len += len(data)
+                if IS_TCP_SERVER: # 合并多个数据包一起发送
+                    seq -= merge_seq
+                    if data:
+                        qsize = self.data_queue.qsize()
+                        for m in range(qsize):
+                            (new_seq, data2) = self.data_queue.get()
+                            if data2:
+                                merge_seq += 1
+                                send_len += len(data2)
+                                data += data2
                 for i in range(50):
                     if not data:
                         if send_ack >= self.ack:
@@ -166,9 +181,9 @@ class TCPEchoServer():
                     if data:
                         length = len(data)
                     if i == 0:
-                        info('2.send proxy data seq %s, len: %d, ack: %d >>> seq: %d >>>' % (seq, length, self.ack, seq))
+                        info('2.send proxy data seq %s, len: %d, ack: %d >>> seq: %d, %d >>>' % (seq, length, self.ack, seq, send_len))
                     else:
-                        info('timeout 2.send proxy data seq %s, len: %d, ack: %d, retran: %d >>> seq: %d >>>' % (seq, length, self.ack, i, seq))
+                        info('timeout 2.send proxy data seq %s, len: %d, ack: %d, retran: %d >>> seq: %d, %d >>>' % (seq, length, self.ack, i, seq, send_len))
                     # 发送数据
                     if IS_TCP_SERVER:
                         self.clip_queue.put(send_data)
@@ -318,7 +333,8 @@ class TCPEchoServer():
                 self.client_socket.close()
                 return False
 
-            info('1.send proxy data seq %d, len: %d' % (self.tcp_seq, len(data)))
+            self.tcp_len += len(data)
+            info('1.send proxy data seq %d, len: %d, total: %d' % (self.tcp_seq, len(data), self.tcp_len))
             self.data_queue.put((self.tcp_seq, data))
             self.tcp_seq += 1
 
