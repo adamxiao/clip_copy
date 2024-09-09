@@ -2,6 +2,8 @@
 # -*- coding:utf-8 -*-
 
 import socket
+import gi
+gi.require_version('Gtk', '3.0')  # For GTK 3
 from gi.repository import Gtk, GLib, Gdk
 import signal
 import base64
@@ -168,6 +170,8 @@ class TCPEchoServer():
                                 merge_seq += 1
                                 send_len += len(data2)
                                 data += data2
+                                if len(data) >= 819200: # limit merge len
+                                    break
                 for i in range(50):
                     if not data:
                         if send_ack >= self.ack:
